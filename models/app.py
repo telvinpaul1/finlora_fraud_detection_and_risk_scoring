@@ -1,113 +1,105 @@
-# FINLORA FINANCE FLOW
-# FRAUD DETECTION & RISK SCORING DASHBOARD
-# Streamlit is used to create the web application.
-import streamlit as st
 
-# Pandas is used to work with transaction data.
-import pandas as pd
+# Transaction scoring
+# FILE: src/scoring.py
 
-# NumPy is used for numerical calculations.
-import numpy as np
+def score_transaction(transaction, model_package):
 
-# Joblib loads the trained machine-learning models.
-import joblib
+    model = model_package["model"]
+    preprocessor = model_package["preprocessor"]
+    model_features = model_package["model_features"]
+    threshold = model_package["threshold"]
 
-# Used for displaying charts.
-import matplotlib.pyplot as plt
+    transaction_df = pd.DataFrame([transaction])
 
-#  PAGE CONFIGURATION
-st.set_page_config(
-    page_title="Finlora Fraud Risk Scoring",
-    page_icon="💳",
-    layout="wide"
-)
-#  APPLICATION TITLE
-st.title("💳 Finlora Finance Flow")
-st.subheader("Fraud Detection & Risk Scoring System")
-
-st.write(
-    """
-    This prototype uses a machine-learning model to estimate the
-    probability that a transaction is fraudulent.
-
-    The Random Forest model is used as the primary risk-scoring model.
-    Transactions can then be prioritised for further analyst review.
-    """
-)
-
-#  LOAD TRAINED MODELS
-# The models are stored in the 'models' folder.
-MODEL_FOLDER = "models"
-try:
-
-    # Load the trained Random Forest model.
-    rf_model = joblib.load(
-        f"{MODEL_FOLDER}/random_forest_model.pkl"
-    )
-
-    # Load the Logistic Regression model.
-    logistic_model = joblib.load(
-        f"{MODEL_FOLDER}/logistic_regression_model.pkl"
-    )
-
-     # Load the preprocessing object used during training.
-    preprocessor = joblib.load(
-        f"{MODEL_FOLDER}/preprocessor.pkl"
-    )
-
-    # Load the scaler used by Logistic Regression.
-    scaler = joblib.load(
-        f"{MODEL_FOLDER}/scaler.pkl"
-    )
-
-    # Load the original model feature list.
-    model_features = joblib.load(
-        f"{MODEL_FOLDER}/model_features.pkl"
-    )
-
-    st.success("Models loaded successfully.")
-
-except Exception as e:
-
-    st.error(
-        "Unable to load the trained models. "
-        "Make sure the 'models' folder is in the same directory as app.py."
-    )
-
-    st.stop()
-
-    #  SIDEBAR
-    st.sidebar.header("Model Configuration")
-
-# Allow the user to choose which trained model to use.
-selected_model = st.sidebar.selectbox(
-    "Select model",
-    [
-        "Random Forest",
-        "Logistic Regression"
+    missing_features = [
+        col for col in model_features
+        if col not in transaction_df.columns
     ]
-)
 
-st.sidebar.write(
-    """
-    **Random Forest** is the primary model for this prototype.
+    if missing_features:
+        raise ValueError(
+            f"Missing required features: {missing_features}"
+        )
 
-    **Logistic Regression** is retained as the interpretable baseline.
-    """
-)
+    transaction_df = transaction_df[model_features]
 
-#  UPLOAD TRANSACTION DATA
-st.header("Transaction Risk Assessment")
+    transaction_encoded = preprocessor.transform(
+        transaction_df
+    )
 
-st.write(
-    """
-    Upload a CSV file containing transactions with the same feature
-    structure used during model training.
-    """
-)
+    fraud_probability = model.predict_proba(
+        transaction_encoded
+    )[0, 1]
 
-uploaded_file = st.file_uploader(
-    "Upload transaction CSV",
-    type=["csv"]
-)
-#  PROCESS UPLOADED DATA
+    risk_score = fraud_probability * 100
+
+    review_required = fraud_probability >= threshold
+
+    if fraud_probability >= 0.50:
+        risk_category = "High Risk"
+    elif fraud_probability >= 0.30:
+        risk_category = "Medium Risk"
+    else:
+        risk_category = "Low Risk"
+
+    return {
+        "fraud_probability": round(fraud_probability, 4),
+        "risk_score": round(risk_score, 2),
+        "risk_category": risk_category,
+        "review_required": review_required,
+        "operating_threshold": threshold
+    }
+
+# Review queue
+def create_review_queue(transactions, model_package):
+
+    model = model_package["model"]
+    preprocessor = model_package["preprocessor"]
+    model_features = model_package["model_features"]
+    threshold = model_package["threshold"]
+
+    X_transactions = transactions[model_features]
+
+    X_encoded = preprocessor.transform(
+        X_transactions
+    )
+
+    probabilities = model.predict_proba(
+        X_encoded
+    )[:, 1]
+
+    results = transactions[
+        ["transaction_id"]
+    ].copy()
+
+    results["fraud_probability"] = probabilities
+
+    results["risk_score"] = probabilities * 100
+
+    results["risk_category"] = pd.cut(
+        probabilities,
+        bins=[
+            -float("inf"),
+            0.30,
+            0.50,
+            float("inf")
+        ],
+        labels=[
+            "Low Risk",
+            "Medium Risk",
+            "High Risk"
+        ]
+    )
+
+    results["review_required"] = (
+        probabilities >= threshold
+    )
+
+    review_queue = results[
+        results["review_required"] == True
+    ].sort_values(
+        "fraud_probability",
+        ascending=False
+    )
+
+    return review_queue
